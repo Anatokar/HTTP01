@@ -1,34 +1,62 @@
 package ru.netology;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Map;
+import java.util.concurrent.*;
 
 public class Server {
-    private final int port;
-    private final ExecutorService threadPool;
-    private final Set<String> validPaths = Set.of(
-            "/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css",
-            "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js"
-    );
+    private final int poolSize = 64;
+    private final ExecutorService executorService = Executors.newFixedThreadPool(poolSize);
 
-    public Server(int port, int threadCount) {
-        this.port = port;
-        this.threadPool = Executors.newFixedThreadPool(threadCount);
+    private final Map<String, Map<String, Handler>> handlers = new ConcurrentHashMap<>();
+
+    public void addHandler(String method, String path, Handler handler) {
+        handlers.computeIfAbsent(method, k -> new ConcurrentHashMap<>()).put(path, handler);
     }
 
-    public void start() {
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+    public void listen(int port) {
+        try (var serverSocket = new ServerSocket(port)) {
             System.out.println("Server started on port " + port);
             while (true) {
-                Socket clientSocket = serverSocket.accept();
-                threadPool.submit(new ClientHandler(clientSocket, validPaths));
+                final var socket = serverSocket.accept();
+                executorService.submit(() -> handleConnection(socket));
             }
         } catch (IOException e) {
-            System.err.println("Server error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void handleConnection(Socket socket) {
+        try (
+                socket;
+                var in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                var out = new BufferedOutputStream(socket.getOutputStream());
+        ) {
+            var request = new Request(in);
+            var method = request.getMethod();
+            var path = request.getPath();
+
+            var methodHandlers = handlers.get(method);
+            if (methodHandlers != null) {
+                var handler = methodHandlers.get(path);
+                if (handler != null) {
+                    handler.handle(request, out);
+                    return;
+                }
+            }
+
+            // handler не найден
+            out.write((
+                    "HTTP/1.1 404 Not Found\r\n" +
+                            "Content-Length: 0\r\n" +
+                            "Connection: close\r\n" +
+                            "\r\n"
+            ).getBytes());
+            out.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 }
